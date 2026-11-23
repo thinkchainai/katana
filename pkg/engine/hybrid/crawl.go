@@ -199,7 +199,12 @@ func (c *Crawler) navigateRequest(s *common.CrawlSession, request *navigation.Re
 
 		if !skipParse {
 			navigationRequests := c.Options.Parser.ParseResponse(resp)
-			c.Enqueue(s.Queue, navigationRequests...)
+			if matchOriginalURL {
+				navigationRequests = c.KeepPageFields(request, resp, navigationRequests)
+				c.Enqueue(s.Queue, navigationRequests...)
+			} else {
+				c.OutputParsed(s.Queue, resp, navigationRequests)
+			}
 		}
 
 		// do not continue following the request if it's a redirect and redirects are disabled
@@ -400,6 +405,7 @@ func (c *Crawler) navigateRequest(s *common.CrawlSession, request *navigation.Re
 		responseCopy.Reader, _ = goquery.NewDocumentFromReader(strings.NewReader(responseCopy.Body))
 		if responseCopy.Reader != nil {
 			navigationRequests := c.Options.Parser.ParseResponse(&responseCopy)
+			navigationRequests = c.KeepPageFields(request, &responseCopy, navigationRequests)
 			c.Enqueue(s.Queue, navigationRequests...)
 		}
 	}

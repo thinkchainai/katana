@@ -547,6 +547,35 @@ func TestRegexBodyParsers(t *testing.T) {
 	})
 }
 
+func TestEmailFieldKeepsRealAddresses(t *testing.T) {
+	parsed, _ := urlutil.Parse("https://example.com/contact")
+	output.CustomFieldsMap = map[string]output.CustomFieldConfig{
+		"email": {
+			Name:         "email",
+			Type:         "regex",
+			Part:         "body",
+			CompileRegex: []*regexp.Regexp{regexp.MustCompile(`([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})`)},
+			Group:        1,
+		},
+	}
+	body := `<a href="mailto:Enquiries@Example.com">office</a>
+<script>{"email":"emma.white@example.com"}</script>
+<span data-cfemail="422b2c242d02273a232f322e276c212d2f"></span>
+<p>sam [at] example [dot] com</p>
+<p>G35d273142705426e903d373ded3f0ef9@example.com</p>`
+	resp := &navigation.Response{
+		Resp: &http.Response{Request: &http.Request{URL: parsed.URL}},
+		Body: body,
+	}
+	got := customFieldRegexParser(resp)
+	require.Equal(t, []string{
+		"enquiries@example.com",
+		"emma.white@example.com",
+		"info@example.com",
+		"sam@example.com",
+	}, got[0].CustomFields["email"])
+}
+
 func TestHtmxBodyParser(t *testing.T) {
 	parsed, _ := urlutil.Parse("https://htmx.org/examples/")
 

@@ -9,13 +9,14 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/PuerkitoBio/goquery"
 	"github.com/go-rod/rod"
+	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/projectdiscovery/gologger"
 	"github.com/projectdiscovery/katana/pkg/engine/parser/files"
 	"github.com/projectdiscovery/katana/pkg/navigation"
@@ -46,13 +47,13 @@ type hostBackoff struct {
 const hostBackoffsCacheSize = 10000
 
 type Shared struct {
-	Headers            map[string]string
-	KnownFiles         *files.KnownFiles
-	Options            *types.CrawlerOptions
-	Jar                *httputil.CookieJar
-	PathTrie           *utils.PathTrie
+	Headers           map[string]string
+	KnownFiles        *files.KnownFiles
+	Options           *types.CrawlerOptions
+	Jar               *httputil.CookieJar
+	PathTrie          *utils.PathTrie
 	DomainPageCounter sync.Map
-	hostBackoffs *lru.Cache[string, *hostBackoff]
+	hostBackoffs      *lru.Cache[string, *hostBackoff]
 }
 
 // NewShared creates a new Shared instance with the provided crawler options.
@@ -214,6 +215,68 @@ func (s *Shared) ValidateScope(URL string, root string) bool {
 	return err == nil && scopeValidated
 }
 
+// OutputParsed writes addresses found on a response that has no later output
+// of its own, then queues newly discovered URLs.
+func (s *Shared) OutputParsed(queue *queue.Queue, resp *navigation.Response, reqs []*navigation.Request) {
+	s.Enqueue(queue, s.KeepPageFields(nil, resp, reqs)...)
+}
+
+// KeepPageFields attaches addresses found on this document to the request that
+// is about to be written. Queueing that same URL again refetches it, the
+// content filter drops the body, and the address is never written.
+func (s *Shared) KeepPageFields(req *navigation.Request, resp *navigation.Response, reqs []*navigation.Request) []*navigation.Request {
+	pageURL := responseURL(resp)
+	if pageURL == "" && req != nil {
+		pageURL = req.URL
+	}
+	crawl := make([]*navigation.Request, 0, len(reqs))
+	for _, nr := range reqs {
+		if nr == nil {
+			continue
+		}
+		samePage := pageURL != "" && sameDocumentURL(nr.URL, pageURL)
+		if len(nr.CustomFields) > 0 && samePage {
+			if req != nil {
+				mergeCustomFields(req, nr)
+			} else {
+				s.Output(nr, resp, nil)
+			}
+			continue
+		}
+		crawl = append(crawl, nr)
+	}
+	return crawl
+}
+
+func mergeCustomFields(dst *navigation.Request, src *navigation.Request) {
+	if dst.CustomFields == nil {
+		dst.CustomFields = make(map[string][]string, len(src.CustomFields))
+	}
+	for key, values := range src.CustomFields {
+		dst.CustomFields[key] = append(dst.CustomFields[key], values...)
+	}
+}
+
+func responseURL(resp *navigation.Response) string {
+	if resp == nil || resp.Resp == nil || resp.Resp.Request == nil || resp.Resp.Request.URL == nil {
+		return ""
+	}
+	return resp.Resp.Request.URL.String()
+}
+
+func sameDocumentURL(left, right string) bool {
+	parsedLeft, errLeft := url.Parse(left)
+	parsedRight, errRight := url.Parse(right)
+	if errLeft != nil || errRight != nil {
+		return strings.TrimRight(left, "/") == strings.TrimRight(right, "/")
+	}
+	parsedLeft.Fragment = ""
+	parsedRight.Fragment = ""
+	parsedLeft.Path = strings.TrimRight(parsedLeft.Path, "/")
+	parsedRight.Path = strings.TrimRight(parsedRight.Path, "/")
+	return parsedLeft.String() == parsedRight.String()
+}
+
 // Output writes a crawl result to the configured output writer.
 // It creates a Result object containing the navigation request, response (if any),
 // and error information (if any), then writes it to the output writer.
@@ -371,7 +434,7 @@ func (s *Shared) NewCrawlSessionWithURL(URL string) (*CrawlSession, error) {
 			KnowledgeBase: s.Options.BuildKnowledgeBase(string(body), resp.Request, resp),
 		}
 		navigationRequests := s.Options.Parser.ParseResponse(navigationResponse)
-		s.Enqueue(queue, navigationRequests...)
+		s.OutputParsed(queue, navigationResponse, navigationRequests)
 	})
 	if err != nil {
 		cancel()
@@ -495,11 +558,10 @@ func (s *Shared) Do(crawlSession *CrawlSession, doRequest DoRequestFunc) error {
 				s.RecordSuccess(crawlSession.Hostname)
 			}
 
-			if inScope {
-				s.Output(req, resp, err)
-			}
-
 			if err != nil {
+				if inScope {
+					s.Output(req, resp, err)
+				}
 				gologger.Warning().Msgf("Could not request seed URL %s: %s\n", req.URL, err)
 				outputError := &output.Error{
 					Timestamp: time.Now(),
@@ -511,13 +573,23 @@ func (s *Shared) Do(crawlSession *CrawlSession, doRequest DoRequestFunc) error {
 				return
 			}
 			if resp == nil || resp.Resp == nil || resp.Reader == nil {
+				if inScope {
+					s.Output(req, resp, err)
+				}
 				return
 			}
 			if s.Options.Options.DisableRedirects && resp.IsRedirect() {
+				if inScope {
+					s.Output(req, resp, err)
+				}
 				return
 			}
 
 			navigationRequests := s.Options.Parser.ParseResponse(resp)
+			navigationRequests = s.KeepPageFields(req, resp, navigationRequests)
+			if inScope {
+				s.Output(req, resp, err)
+			}
 			s.Enqueue(crawlSession.Queue, navigationRequests...)
 		}()
 	}

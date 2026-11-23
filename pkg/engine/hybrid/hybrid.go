@@ -329,11 +329,10 @@ func (c *Crawler) Do(crawlSession *common.CrawlSession, doRequest common.DoReque
 			c.RecordSuccess(crawlSession.Hostname)
 		}
 
-		if inScope {
-			c.Output(req, resp, err)
-		}
-
 		if err != nil {
+			if inScope {
+				c.Output(req, resp, err)
+			}
 			gologger.Warning().Msgf("Could not request seed URL %s: %s\n", req.URL, err)
 			outputError := &output.Error{
 				Timestamp: time.Now(),
@@ -344,14 +343,18 @@ func (c *Crawler) Do(crawlSession *common.CrawlSession, doRequest common.DoReque
 			_ = c.Options.OutputWriter.WriteErr(outputError)
 			continue
 		}
-		if resp == nil || resp.Resp == nil || resp.Reader == nil {
-			continue
-		}
-		if c.Options.Options.DisableRedirects && resp.IsRedirect() {
+		if resp == nil || resp.Resp == nil || resp.Reader == nil || (c.Options.Options.DisableRedirects && resp.IsRedirect()) {
+			if inScope {
+				c.Output(req, resp, err)
+			}
 			continue
 		}
 
 		navigationRequests := c.Options.Parser.ParseResponse(resp)
+		navigationRequests = c.KeepPageFields(req, resp, navigationRequests)
+		if inScope {
+			c.Output(req, resp, err)
+		}
 		c.Enqueue(crawlSession.Queue, navigationRequests...)
 	}
 	return nil

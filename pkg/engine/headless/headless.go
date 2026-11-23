@@ -239,6 +239,10 @@ func (h *Headless) Close() error {
 	return nil
 }
 
+func sameHeadlessURL(left, right string) bool {
+	return strings.TrimRight(left, "/") == strings.TrimRight(right, "/")
+}
+
 func (h *Headless) isUniqueURL(rawURL string) bool {
 	dedupKey := rawURL
 	if h.options.Options.IgnoreQueryParams {
@@ -255,12 +259,23 @@ func (h *Headless) performAdditionalAnalysis(rr *output.Result) []*output.Result
 	newNavigations := responseParser.ParseResponse(rr.Response)
 
 	navigationRequests := make([]*output.Result, 0)
-	for _, resp := range newNavigations {
-		if !h.isUniqueURL(resp.URL) {
+	for _, nav := range newNavigations {
+		// Addresses belong on the page result that is written below. The page
+		// URL is already registered, so a uniqueness check would drop them.
+		if len(nav.CustomFields) > 0 && rr != nil && rr.Request != nil && sameHeadlessURL(nav.URL, rr.Request.URL) {
+			if rr.Request.CustomFields == nil {
+				rr.Request.CustomFields = make(map[string][]string, len(nav.CustomFields))
+			}
+			for key, values := range nav.CustomFields {
+				rr.Request.CustomFields[key] = append(rr.Request.CustomFields[key], values...)
+			}
+			continue
+		}
+		if !h.isUniqueURL(nav.URL) {
 			continue
 		}
 		navigationRequests = append(navigationRequests, &output.Result{
-			Request: resp,
+			Request: nav,
 		})
 	}
 	return navigationRequests

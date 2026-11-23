@@ -807,6 +807,10 @@ func customFieldRegexParser(resp *navigation.Response) (navigationRequests []*na
 				results = append(results, matchString)
 			}
 		}
+		if strings.EqualFold(v.GetName(), "email") && (v.Part == output.Body.ToString() || v.Part == output.Response.ToString()) {
+			results = append(results, extraEmailCandidates(string(resp.Body))...)
+			results = keepEmails(results)
+		}
 		if len(results) > 0 {
 			customField[v.GetName()] = results
 		}

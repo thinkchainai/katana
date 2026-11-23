@@ -10,6 +10,56 @@ import (
 )
 
 func (w *StandardWriter) formatTemplate(output *Result) ([]byte, error) {
+	emails := distinctCustomField(output, "email")
+	if len(emails) <= 1 {
+		return w.renderTemplate(output)
+	}
+	lines := make([]string, 0, len(emails))
+	for _, email := range emails {
+		clone := *output
+		req := *output.Request
+		fields := make(map[string][]string, len(req.CustomFields))
+		for key, values := range req.CustomFields {
+			fields[key] = values
+		}
+		fields["email"] = []string{email}
+		req.CustomFields = fields
+		clone.Request = &req
+		line, err := w.renderTemplate(&clone)
+		if err != nil {
+			return nil, err
+		}
+		if len(line) > 0 {
+			lines = append(lines, string(line))
+		}
+	}
+	if len(lines) == 0 {
+		return nil, nil
+	}
+	return []byte(strings.Join(lines, "\n")), nil
+}
+
+func distinctCustomField(output *Result, name string) []string {
+	if output == nil || output.Request == nil {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	var values []string
+	for _, value := range output.Request.CustomFields[name] {
+		key := strings.ToLower(strings.TrimSpace(value))
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		values = append(values, value)
+	}
+	return values
+}
+
+func (w *StandardWriter) renderTemplate(output *Result) ([]byte, error) {
 	var fieldOutputs []fieldOutput
 	fieldNames := strings.Join(FieldNames, ",")
 	fieldOutputs = formatField(output, fieldNames)
